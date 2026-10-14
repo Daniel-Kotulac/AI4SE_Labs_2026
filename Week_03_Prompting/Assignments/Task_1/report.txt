@@ -1,0 +1,6 @@
+I chose ICIO, RTF and RISE
+I chose RISE because it seemed like a good option for delegating work to the AI and I expectit to be correct but maybe a bit slower.
+I chose RTF because it was simple and easy to understand and I expect it to be fast and correct.
+I chose ICIO because it is a framework meant for AI prompting and I expect it to be the best
+
+All of the frameworks were from the website https://frompting.com/frameworks provided in the instructions for this task.

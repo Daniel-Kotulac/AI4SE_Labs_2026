@@ -1,0 +1,8 @@
+[Request]
+A structured csv file that has plaintext questions in one column named questions and predicted sql queries that should answer those questions in a column named predicted_sql.
+[Input]
+Csv file with the structure of the database containing the restaurants and the data about them and a another csv file with one column containing the questions.
+[Scenario]
+It will be evaluated down the line and the results used will be used to determine the usefulness of different prompting frameworks.
+[Expectation]
+The SQL queries should answer the questions as close as possible.

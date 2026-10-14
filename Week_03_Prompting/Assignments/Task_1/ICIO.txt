@@ -1,0 +1,11 @@
+[INSTRUCTION]
+Answer the queistions in the provided CSV files using sql querries 
+
+[CONTEXT]
+You get two CSV files that give you questions and the structure of an SQL database. Create a CSV file that will have the questions and predicted sql querries that will answer the questions.
+
+[INPUT]
+A CSV file containing raw natural language questions in a single text column and a CSV file containing the structure of the database.
+
+[OUTPUT]
+A brand-new CSV file containing two columns question and predicted_sql.
