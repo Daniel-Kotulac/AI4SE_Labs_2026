@@ -1,44 +1,49 @@
 import json
 import tempfile
-import threading
 import unittest
 from pathlib import Path
 
 from requirements_agent import (
-    ConsolidationResult,
-    ExtractionResult,
+    Audit,
+    Consolidation,
+    Discarded,
+    Extraction,
     Requirement,
-    ReviewResult,
-    SourceDocument,
-    build_workflow,
-    chunk_document,
-    render_requirements_document,
-    _consolidate,
+    bind_discarded_sources,
+    build_graph,
+    deduplicate_blacklist,
+    load_sources,
+    merge_exact_duplicates,
+    render,
+    split_source,
 )
 
 
-def requirement(name, source, statement):
+def req(name, source, statement):
     return Requirement(
         name=name,
-        category="Functional",
         statement=statement,
-        explanation="The feature supports staff work and provides predictable access to "
-        "reporting information across locations.",
-        priority="Medium",
-        priority_rationale="The source describes this as a needed staff capability.",
-        source_documents=[source],
+        explanation=(
+            "The system should provide this capability to staff. "
+            "The behavior must remain consistent across library locations."
+        ),
+        category="Functional",
+        priority="High",
+        priority_reason="Stakeholders identify this as an operational need.",
+        sources=[source],
         evidence=[statement],
     )
 
 
 class FakeExtractor:
-    def invoke(self, _messages):
-        return ExtractionResult(
+    def invoke(self, messages):
+        source = messages[1][1].splitlines()[0].removeprefix("Source: ")
+        return Extraction(
             requirements=[
-                requirement(
-                    "Basic reporting",
-                    "brief.txt",
-                    "The system must provide reports for library staff.",
+                req(
+                    "Report access",
+                    "invented-name.txt",
+                    "The system must allow staff to run authorized reports.",
                 )
             ]
         )
@@ -46,151 +51,223 @@ class FakeExtractor:
 
 class FakeConsolidator:
     def invoke(self, messages):
-        raw = json.loads(messages[1][1])
-        return ConsolidationResult(
-            requirements=[Requirement.model_validate(item) for item in raw]
+        candidates = json.loads(messages[1][1])
+        return Consolidation(
+            requirements=[Requirement.model_validate(item) for item in candidates]
         )
 
 
 class FakeAuditor:
     def __init__(self):
-        self.calls = 0
-
-    def invoke(self, _messages):
-        self.calls += 1
-        if self.calls == 1:
-            return ReviewResult(
-                missing_requirements=[
-                    requirement(
-                        "CSV export",
-                        "brief.txt",
-                        "The system must export reports as CSV.",
-                    )
-                ]
-            )
-        return ReviewResult()
-
-
-class ConcurrentConsolidator:
-    def __init__(self):
-        self.barrier = threading.Barrier(4)
-        self.calls = 0
-        self.lock = threading.Lock()
+        self.source_reviews = 0
+        self.global_reviewed = False
 
     def invoke(self, messages):
-        self.barrier.wait(timeout=3)
-        with self.lock:
-            self.calls += 1
-        raw = json.loads(messages[1][1])
-        return ConsolidationResult(
-            requirements=[Requirement.model_validate(item) for item in raw]
-        )
-
-
-class RequirementsAgentTests(unittest.TestCase):
-    def test_chunking_preserves_source_and_covers_end(self):
-        doc = SourceDocument(source_id="nested/source.txt", text="abcdefghij" * 10)
-        chunks = chunk_document(doc, max_chars=30, overlap=5)
-        self.assertGreater(len(chunks), 1)
-        self.assertTrue(all(chunk.source_id == doc.source_id for chunk in chunks))
-        self.assertTrue(chunks[-1].text.endswith("j"))
-
-    def test_render_assigns_unique_ids_and_traces(self):
-        requirements = [
-            Requirement(
-                name="Accessible output",
-                category="Non-functional",
-                statement="The system must provide accessible HTML reports.",
-                explanation="Reports must use semantic HTML to support assistive technology "
-                "and allow staff with disabilities to use the reporting interface.",
-                priority="High",
-                priority_rationale="The source identifies accessibility as mandatory.",
-                source_documents=["interview.txt"],
-                evidence=["must comply with accessibility requirements"],
-            ),
-            Requirement(
-                name="Role-based access",
-                category="Functional",
-                statement="The system must control report access by staff role.",
-                explanation="Administrators must assign staff to roles so report permissions "
-                "can be managed consistently across teams and locations.",
-                priority="High",
-                priority_rationale="Access control is an explicit administrative need.",
-                source_documents=["email.eml"],
-                evidence=["permissions through roles"],
-            ),
-        ]
-        output = render_requirements_document(
-            requirements, [], ["interview.txt", "email.eml"]
-        )
-        self.assertIn("### REQ-001", output)
-        self.assertIn("### REQ-002", output)
-        self.assertIn("`interview.txt`", output)
-        self.assertIn("Requirement priority scale", output)
-        self.assertIn("Discarded / conflicting proposals", output)
-
-    def test_render_rejects_unknown_source(self):
-        req = Requirement(
-            name="Untraceable",
-            category="Functional",
-            statement="The system must do something.",
-            explanation="This requirement has a description long enough to pass validation.",
-            priority="Low",
-            priority_rationale="No evidence.",
-            source_documents=["missing.txt"],
-            evidence=["an excerpt"],
-        )
-        with self.assertRaisesRegex(ValueError, "unknown documents"):
-            render_requirements_document([req], [], ["known.txt"])
-
-    def test_chunking_rejects_invalid_overlap(self):
-        with self.assertRaises(ValueError):
-            chunk_document(
-                SourceDocument(source_id="source.txt", text="text"),
-                max_chars=10,
-                overlap=10,
+        if "Complete requirements:" in messages[1][1]:
+            self.global_reviewed = True
+            return Audit(consistency_issues=["Resolve any remaining scope ambiguity."])
+        self.source_reviews += 1
+        if self.source_reviews == 1:
+            source = messages[1][1].splitlines()[0].removeprefix("Exact source path: ")
+            return Audit(
+                missing=[
+                    req(
+                        "CSV exports",
+                        "invented-source.txt",
+                        "The system must export reports as CSV.",
+                    )
+                ],
+                discarded=[
+                    Discarded(
+                        name="Nonsensical proposal",
+                        proposal="unsupported proposal",
+                        reason_type="nonsensical",
+                        reason="It has no defined system behavior.",
+                        sources=["wrong-source.txt"],
+                        evidence=["unsupported proposal"],
+                    )
+                ],
             )
+        return Audit()
 
-    def test_consolidation_batches_run_concurrently(self):
-        candidates = [
-            requirement(
-                f"Requirement {index}",
-                "brief.txt",
-                f"The system must support feature number {index}.",
-            )
-            for index in range(157)
-        ]
-        model = ConcurrentConsolidator()
 
-        consolidated, discarded = _consolidate(model, candidates)
-
-        self.assertEqual(model.calls, 4)
-        self.assertEqual(len(consolidated), len(candidates))
-        self.assertEqual(discarded, [])
-
-    def test_graph_refines_audit_omission(self):
-        auditor = FakeAuditor()
-        workflow = build_workflow(
-            extractor=FakeExtractor(),
-            consolidator=FakeConsolidator(),
-            auditor=auditor,
+class RequirementsWorkflowTests(unittest.TestCase):
+    def test_merges_identical_statements_with_different_names(self):
+        first = req(
+            "Report access",
+            "reports.txt",
+            "The system must allow staff to run authorized reports.",
         )
+        second = req(
+            "Authorized report execution",
+            "permissions.txt",
+            "The system must allow staff to run authorized reports.",
+        )
+
+        merged = merge_exact_duplicates([first, second])
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0].sources, ["permissions.txt", "reports.txt"])
+        self.assertEqual(merged[0].evidence, [first.statement])
+
+    def test_blacklist_source_is_mapped_from_evidence_not_model_filename(self):
+        source = {
+            "name": "real.txt",
+            "text": "Staff must not receive unauthorized account information.",
+        }
+        item = Discarded(
+            name="Unauthorized data access",
+            proposal="Staff must not receive unauthorized account information.",
+            reason_type="conflict",
+            reason="It conflicts with the access restrictions.",
+            sources=["invented.txt"],
+            evidence=["unauthorized account information"],
+        )
+
+        bound = bind_discarded_sources([item], [source])
+
+        self.assertEqual(bound[0].sources, ["real.txt"])
+
+    def test_excludes_blacklist_without_source_supported_proposal(self):
+        sources = [
+            {
+                "name": "minutes.txt",
+                "text": "The group discussed reports and multiple output formats.",
+            }
+        ]
+        item = Discarded(
+            name="Excel-only output",
+            proposal="All reports must be generated in Excel format only.",
+            reason_type="conflict",
+            reason="This would restrict output formats.",
+            sources=["minutes.txt"],
+            evidence=["No mention of Excel-only output in the minutes."],
+        )
+
+        self.assertEqual(bind_discarded_sources([item], sources), [])
+
+    def test_excludes_blacklist_candidate_that_duplicates_a_requirement(self):
+        source = {
+            "name": "reports.txt",
+            "text": "The system must allow staff to run authorized reports.",
+        }
+        requirement = req(
+            "Authorized reports",
+            "reports.txt",
+            "The system must allow staff to run authorized reports.",
+        )
+        item = Discarded(
+            name="Authorized reports",
+            proposal="The system must allow staff to run authorized reports.",
+            reason_type="conflict",
+            reason="Duplicate of a retained requirement.",
+            sources=["reports.txt"],
+            evidence=["The system must allow staff to run authorized reports."],
+        )
+
+        self.assertEqual(
+            bind_discarded_sources([item], [source], [requirement]), []
+        )
+
+    def test_blacklist_deduplication_uses_proposal_not_display_name(self):
+        first = Discarded(
+            name="Rejected proposal",
+            proposal="The system shall delete all records without authorization.",
+            reason_type="nonsensical",
+            reason="The proposal has no authorized scope.",
+            sources=["deletion.txt"],
+            evidence=["delete all records without authorization"],
+        )
+        second = Discarded(
+            name="Rejected proposal",
+            proposal="The system shall permanently remove transaction history.",
+            reason_type="conflict",
+            reason="It conflicts with the retention rule.",
+            sources=["retention.txt"],
+            evidence=["permanently remove transaction history"],
+        )
+
+        self.assertEqual(len(deduplicate_blacklist([first, second])), 2)
+
+    def test_loads_nested_text_and_email_documents(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            input_dir = root / "sources"
-            input_dir.mkdir()
-            (input_dir / "brief.txt").write_text("Reports are needed.", encoding="utf-8")
-            output_path = root / "requirements.md"
-
-            workflow.invoke(
-                {"input_dir": str(input_dir), "output_path": str(output_path)}
+            (root / "nested").mkdir()
+            (root / "nested" / "a.txt").write_text("Text source", encoding="utf-8")
+            (root / "mail.eml").write_text(
+                "From: librarian@example.test\nSubject: Reports\n\nNeed CSV reports.",
+                encoding="utf-8",
             )
+            sources = load_sources(root)
 
-            output = output_path.read_text(encoding="utf-8")
-        self.assertEqual(auditor.calls, 2)
-        self.assertIn("Basic reporting", output)
-        self.assertIn("CSV export", output)
-        self.assertIn("brief.txt", output)
+        self.assertEqual([item["name"] for item in sources], ["mail.eml", "nested/a.txt"])
+        self.assertIn("Need CSV reports.", sources[0]["text"])
+
+    def test_split_source_preserves_source_across_chunks(self):
+        long_source = {"name": "notes.txt", "text": ("A paragraph.\n\n" * 1000)}
+        chunks = split_source(long_source)
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(all(chunk["source"] == "notes.txt" for chunk in chunks))
+        self.assertTrue(all(chunk["text"] for chunk in chunks))
+
+    def test_render_has_unique_ids_priority_scale_paragraph_and_blacklist(self):
+        requirement = req(
+            "Report access",
+            "access.txt",
+            "The system must allow staff to run authorized reports.",
+        )
+        discarded = Discarded(
+            name="Unsafe public report access",
+            proposal="Only authorized staff may access reports.",
+            reason_type="conflict",
+            reason="It conflicts with the explicitly required role permissions.",
+            sources=["access.txt"],
+            evidence=["Only authorized staff may access reports."],
+        )
+        document = render(
+            [requirement, requirement],
+            [discarded],
+            ["access.txt"],
+            ["Clarify which staff roles can export financial reports."],
+        )
+
+        self.assertEqual(document.count("### REQ-"), 1)
+        self.assertIn("## Priority scale", document)
+        self.assertIn("**Functional | High**", document)
+        self.assertIn("The system should provide this capability to staff.", document)
+        self.assertIn("## Blacklist: conflicting or nonsensical candidates", document)
+        self.assertIn("**Rejected candidate:** Only authorized staff may access reports.", document)
+        self.assertIn("**Reason:** conflict -", document)
+        self.assertIn("**Evidence:** Only authorized staff may access reports.", document)
+        self.assertIn("**Trace:** `access.txt`", document)
+        self.assertIn("Clarify which staff roles", document)
+
+    def test_graph_runs_completeness_refinement_and_consistency_review(self):
+        auditor = FakeAuditor()
+        graph = build_graph(FakeExtractor(), FakeConsolidator(), auditor)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            input_dir = root / "source"
+            input_dir.mkdir()
+            (input_dir / "needs.txt").write_text(
+                "Staff need authorized reports and CSV export.", encoding="utf-8"
+            )
+            output = root / "requirements.md"
+
+            graph.invoke({"input_dir": str(input_dir), "output": str(output)})
+            result = output.read_text(encoding="utf-8")
+
+        self.assertEqual(auditor.source_reviews, 2)
+        self.assertTrue(auditor.global_reviewed)
+        self.assertIn("### REQ-001", result)
+        self.assertIn("Report access", result)
+        self.assertIn("CSV exports", result)
+        self.assertIn("**Trace:** `needs.txt`", result)
+        self.assertNotIn("Nonsensical proposal", result)
+        self.assertNotIn("invented-name.txt", result)
+        self.assertNotIn("invented-source.txt", result)
+        self.assertNotIn("wrong-source.txt", result)
+        self.assertIn("Resolve any remaining scope ambiguity.", result)
 
 
 if __name__ == "__main__":
