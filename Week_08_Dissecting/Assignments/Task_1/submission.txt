@@ -1,0 +1,1 @@
+I use GitHub Copilot in VS Code. Its core system prompt is managed by Copilot and is not available for manual editing. Similar features include workspace instructions and custom prompts, which can guide Copilot’s responses.

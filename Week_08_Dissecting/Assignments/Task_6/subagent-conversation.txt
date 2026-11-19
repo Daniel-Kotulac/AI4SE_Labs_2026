@@ -1,0 +1,9 @@
+User: Create sub agents to create two simple sorting function based on two different alghoritms.
+
+Orchestrator: I delegated bubble sort and merge sort to two separate subagents, with instructions to create one dependency-free Python function per file, return a sorted copy, and verify representative examples.
+
+Bubble-sort subagent: Implemented bubble_sort.py with an educational bubble sort that returns a sorted copy and handles empty and singleton lists. Verified five direct examples, including duplicates and reverse order; all passed, and inputs remained unchanged.
+
+Merge-sort subagent: Created merge_sort.py with a dependency-free merge sort that returns a sorted copy and handles empty and singleton lists. Verified four direct examples: empty, singleton, duplicates, and mixed positive/negative values. All passed, and each original input remained unchanged.
+
+Orchestrator verification: Ran both functions against five representative inputs, including empty, singleton, unsorted, duplicate, negative, and reverse-ordered values. All checks passed and neither function mutated its input.
