@@ -1,0 +1,1 @@
+I created AGENTS.md by asking the Copilot agent in a prompt to create it.

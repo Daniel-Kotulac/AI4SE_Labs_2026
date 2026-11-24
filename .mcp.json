@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "task7-demo": {
+      "type": "stdio",
+      "command": "C:\\Users\\kotul\\AppData\\Local\\Microsoft\\WindowsApps\\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\\python.exe",
+      "args": ["-m", "Week_08_Dissecting.Assignments.Task_7.server"],
+      "tools": ["add"]
+    }
+  }
+}
